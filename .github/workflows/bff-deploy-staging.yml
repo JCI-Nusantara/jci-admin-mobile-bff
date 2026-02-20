@@ -1,0 +1,53 @@
+name: BFF Deploy Nonprod
+
+on:
+  push:
+    branches: ["develop"]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy-nonprod:
+    runs-on: ubuntu-latest
+    environment: staging
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate syntax
+        run: npm run check
+
+      - name: Create deployment package
+        run: |
+          zip -r release.zip . \
+            -x "**/.git/*" "**/node_modules/*" "**/.env" "**/.env.*" "**/coverage/*"
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy to nonprod app
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ secrets.AZURE_WEBAPP_NAME_NONPROD }}
+          package: release.zip
+
+      - name: Nonprod smoke test
+        run: |
+          curl -fsS "${{ secrets.BFF_NONPROD_HEALTH_URL }}"
