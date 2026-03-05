@@ -6,6 +6,7 @@ import crypto from 'node:crypto';
 import { verifyBearerToken, requireAdmin } from './auth.js';
 import { directusRequest } from './directus.js';
 import { createSnapTransaction } from './midtrans.js';
+import { runEventTicketSync } from './sync-event-tickets-saleor.js';
 import {
   addItemToDraftOrder,
   cancelOrder,
@@ -23,6 +24,7 @@ const midtransServerKey = process.env.MIDTRANS_SERVER_KEY || '';
 const devAuthBypassSnap = String(process.env.DEV_AUTH_BYPASS_SNAP || 'false').toLowerCase() === 'true';
 const publicBaseUrl = String(process.env.PUBLIC_BASE_URL || '').replace(/\/+$/, '');
 const configuredMidtransNotificationUrl = String(process.env.MIDTRANS_NOTIFICATION_URL || '').trim();
+const directusSyncWebhookSecret = String(process.env.DIRECTUS_SYNC_WEBHOOK_SECRET || '').trim();
 
 function getMidtransNotificationUrl() {
   if (configuredMidtransNotificationUrl) return configuredMidtransNotificationUrl;
@@ -104,6 +106,23 @@ function isDevSnapBypassRequest(req) {
     req.path === '/dev/snap-tester' ||
     req.path.startsWith('/dev/orders/')
   );
+}
+
+function isValidSyncWebhookSecret(req) {
+  const headerSecret = String(req.headers['x-sync-secret'] || '').trim();
+  if (headerSecret && directusSyncWebhookSecret && headerSecret === directusSyncWebhookSecret) {
+    return true;
+  }
+
+  const authHeader = String(req.headers.authorization || '');
+  if (authHeader.toLowerCase().startsWith('bearer ')) {
+    const token = authHeader.slice(7).trim();
+    if (token && directusSyncWebhookSecret && token === directusSyncWebhookSecret) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 app.use(cors());
@@ -463,6 +482,34 @@ app.post('/webhooks/midtrans', async (req, res, next) => {
     });
   } catch (error) {
     next(error);
+  }
+});
+
+app.post('/webhooks/directus/event-tickets-sync', async (req, res, next) => {
+  try {
+    if (!directusSyncWebhookSecret) {
+      return res.status(503).json({ error: 'DIRECTUS_SYNC_WEBHOOK_SECRET is not configured' });
+    }
+
+    if (!isValidSyncWebhookSecret(req)) {
+      return res.status(401).json({ error: 'Invalid sync webhook secret' });
+    }
+
+    const dryRun = Boolean(req.body?.dryRun);
+    const summary = await runEventTicketSync({ dryRun, trigger: 'directus_webhook' });
+    return res.status(200).json({ success: true, summary });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+app.post('/dev/sync/event-tickets', requireAdmin, async (req, res, next) => {
+  try {
+    const dryRun = Boolean(req.body?.dryRun);
+    const summary = await runEventTicketSync({ dryRun, trigger: 'api' });
+    return res.status(200).json({ success: true, summary });
+  } catch (error) {
+    return next(error);
   }
 });
 

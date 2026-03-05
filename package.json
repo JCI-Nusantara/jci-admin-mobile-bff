@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "node --watch src/index.js",
     "start": "node src/index.js",
-    "check": "node --check src/auth.js && node --check src/directus.js && node --check src/index.js"
+    "check": "node --check src/auth.js && node --check src/directus.js && node --check src/midtrans.js && node --check src/saleor.js && node --check src/sync-event-tickets-saleor.js && node --check src/index.js",
+    "sync:event-tickets:saleor": "node scripts/sync-event-tickets-saleor.js",
+    "sync:event-tickets:saleor:dry": "node scripts/sync-event-tickets-saleor.js --dry-run"
   },
   "dependencies": {
     "axios": "^1.7.9",

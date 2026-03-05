@@ -14,6 +14,14 @@ Backend-for-frontend for the Flutter app.
    - `DIRECTUS_URL`
    - `DIRECTUS_STATIC_TOKEN` OR `DIRECTUS_EMAIL` + `DIRECTUS_PASSWORD`
    - `DIRECTUS_MEMBERS_COLLECTION` (default: `profiles`)
+   - `SALEOR_API_URL`
+   - `SALEOR_API_TOKEN`
+   - `SALEOR_CHANNEL_ID` (optional, used when creating draft orders)
+   - `MIDTRANS_SERVER_KEY`
+   - `MIDTRANS_IS_PRODUCTION` (`false` for sandbox, `true` for production)
+   - `PUBLIC_BASE_URL` (example: `https://jci-mobile-admin-bff-nonprod.azurewebsites.net`)
+   - `MIDTRANS_NOTIFICATION_URL` (optional override; if empty, uses `${PUBLIC_BASE_URL}/webhooks/midtrans`)
+   - `DEV_AUTH_BYPASS_SNAP` (`true` only for local dev; bypasses JWT for Snap create endpoint)
 4. Run:
    - `npm run dev`
 
@@ -30,6 +38,41 @@ Server URL: `http://localhost:8787`
 - `GET /members`
 - `POST /members` (admin role)
 - `PATCH /members/:id` (admin role)
+- `POST /payments/midtrans/snap/transaction` (auth required; create Snap transaction for a Saleor order)
+- `POST /webhooks/midtrans` (public webhook; verifies Midtrans signature, then updates Saleor order payment state)
+- `GET /payments/midtrans/notification-url` (returns the URL to configure in Midtrans dashboard)
+- `GET /dev/snap-tester` (dev-only test page, enabled when `DEV_AUTH_BYPASS_SNAP=true`)
+- `POST /dev/sync/event-tickets` (admin only; run Directus `event_tickets` -> Saleor sync)
+- `POST /webhooks/directus/event-tickets-sync` (secret-protected; for Directus Flow automation)
+
+### Snap transaction request example
+
+`POST /payments/midtrans/snap/transaction`
+
+```json
+{
+  "orderCode": "S3A7Q8F4",
+  "enabledPayments": ["credit_card", "bca_va", "gopay"]
+}
+```
+
+Response includes `token` and `redirectUrl` to continue checkout in mobile/web.
+Current default: BFF does not apply any fee imposition in request payload and always uses the order amount as gross amount.
+
+### Local dev bypass
+
+If member app/website is not ready yet, set:
+
+```env
+DEV_AUTH_BYPASS_SNAP=true
+```
+
+This bypass applies only to:
+
+- `POST /payments/midtrans/snap/transaction`
+- `GET /dev/snap-tester`
+
+Use for local testing only. Set back to `false` before staging/production.
 
 ## CI/CD (Azure OIDC, No Slots)
 
@@ -61,3 +104,24 @@ Set these in both `staging` and `production` environments (as needed):
 ### Rollback recommendation
 
 Create git tags for production releases (for example `bff-v0.1.0`, `bff-v0.1.1`) so rollback is a one-click redeploy using a known good tag.
+
+## Directus -> Saleor Event Ticket Sync
+
+CLI:
+
+- `npm run sync:event-tickets:saleor:dry`
+- `npm run sync:event-tickets:saleor`
+
+Webhook automation:
+
+- Set `DIRECTUS_SYNC_WEBHOOK_SECRET`.
+- Trigger endpoint: `POST /webhooks/directus/event-tickets-sync`
+- Header: `x-sync-secret: <DIRECTUS_SYNC_WEBHOOK_SECRET>`
+- Body example: `{ "dryRun": false }`
+
+Run logs:
+
+- By default, sync writes run status to Directus collection `vendure_sync_logs`.
+- Configure with:
+  - `DIRECTUS_SYNC_LOG_ENABLED=true|false`
+  - `DIRECTUS_SYNC_LOG_COLLECTION=<collection_name>`
