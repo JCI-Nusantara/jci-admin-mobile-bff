@@ -129,7 +129,13 @@ app.get('/payments/midtrans/notification-url', (_req, res) => {
 });
 
 app.use(async (req, _res, next) => {
-  if (req.path === '/health' || req.path.startsWith('/webhooks') || isDevSnapBypassRequest(req)) {
+  const rawUrl = String(req.originalUrl || req.url || '');
+  const isWebhookRequest =
+    req.path.startsWith('/webhooks') ||
+    rawUrl.includes('/webhooks/midtrans') ||
+    rawUrl.includes('webhooks/midtrans');
+
+  if (req.path === '/health' || isWebhookRequest || isDevSnapBypassRequest(req)) {
     return next();
   }
 
