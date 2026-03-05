@@ -6,16 +6,8 @@ const saleorEmail = process.env.SALEOR_EMAIL || '';
 const saleorPassword = process.env.SALEOR_PASSWORD || '';
 const saleorChannelId = process.env.SALEOR_CHANNEL_ID || '';
 
-if (!saleorApiUrl) {
-  throw new Error('SALEOR_API_URL is required');
-}
-
-if (!saleorApiToken && !(saleorEmail && saleorPassword)) {
-  throw new Error('Provide SALEOR_API_TOKEN or SALEOR_EMAIL + SALEOR_PASSWORD');
-}
-
 const saleor = axios.create({
-  baseURL: saleorApiUrl,
+  baseURL: saleorApiUrl || '',
   headers: {
     'Content-Type': 'application/json',
   },
@@ -38,6 +30,13 @@ function decodeJwtExpMs(token) {
 }
 
 async function createUserAccessToken() {
+  if (!saleorApiUrl) {
+    throw new Error('SALEOR_API_URL is required');
+  }
+  if (!saleorEmail || !saleorPassword) {
+    throw new Error('SALEOR_EMAIL and SALEOR_PASSWORD are required to create Saleor token');
+  }
+
   const mutation = `
     mutation TokenCreate($email:String!, $password:String!) {
       tokenCreate(email:$email, password:$password) {
@@ -93,6 +92,13 @@ async function getAuthorizationToken({ forceRefresh = false } = {}) {
 }
 
 async function doRequest(query, variables = {}, token) {
+  if (!saleorApiUrl) {
+    throw new Error('SALEOR_API_URL is required');
+  }
+  if (!token) {
+    throw new Error('Provide SALEOR_API_TOKEN or SALEOR_EMAIL + SALEOR_PASSWORD');
+  }
+
   const { data } = await saleor.post(
     '',
     { query, variables },
