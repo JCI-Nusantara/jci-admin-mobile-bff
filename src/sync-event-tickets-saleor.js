@@ -170,6 +170,21 @@ async function resolveCategoryId(client, token, config) {
   return data?.categories?.edges?.[0]?.node?.id || '';
 }
 
+async function resolveChannelId(client, token, config) {
+  const data = await saleorRequest(client, token, `query { channels { id slug name } }`);
+  const channels = Array.isArray(data?.channels) ? data.channels : [];
+  if (!channels.length) {
+    throw new Error('No channels found in Saleor');
+  }
+
+  if (config.saleorChannelId) {
+    const matched = channels.find((channel) => String(channel?.id || '') === String(config.saleorChannelId));
+    if (matched?.id) return matched.id;
+  }
+
+  return channels[0].id;
+}
+
 async function findProductBySlug(client, token, slug) {
   const data = await saleorRequest(client, token, `query { products(first: 100) { edges { node { id slug } } } }`);
   const nodes = (data?.products?.edges || []).map((edge) => edge?.node).filter(Boolean);
@@ -390,9 +405,11 @@ export async function runEventTicketSync({ dryRun = false, trigger = 'manual' } 
     logId = await writeSyncLogStart(directus, directusToken, config, { runId, dryRun, trigger });
 
     const saleorToken = await getSaleorToken(saleor, config);
-    const productTypeId = await resolveProductTypeId(saleor, saleorToken, config);
-    const warehouseId = await resolveWarehouseId(saleor, saleorToken, config);
-    const categoryId = await resolveCategoryId(saleor, saleorToken, config);
+    const channelId = await resolveChannelId(saleor, saleorToken, config);
+    const runtimeConfig = { ...config, saleorChannelId: channelId };
+    const productTypeId = await resolveProductTypeId(saleor, saleorToken, runtimeConfig);
+    const warehouseId = await resolveWarehouseId(saleor, saleorToken, runtimeConfig);
+    const categoryId = await resolveCategoryId(saleor, saleorToken, runtimeConfig);
 
     const [events, tickets] = await Promise.all([
       fetchDirectusItems(directus, directusToken, config.directusEventsCollection, ['id', 'title', 'slug', 'status']),
@@ -409,7 +426,7 @@ export async function runEventTicketSync({ dryRun = false, trigger = 'manual' } 
     summary.totals.tickets = candidateTickets.length;
 
     console.log(
-      `[sync] mode=${dryRun ? 'dry-run' : 'apply'} tickets=${candidateTickets.length} productType=${productTypeId} category=${categoryId || 'none'} warehouse=${warehouseId || 'none'} channel=${config.saleorChannelId}`
+      `[sync] mode=${dryRun ? 'dry-run' : 'apply'} tickets=${candidateTickets.length} productType=${productTypeId} category=${categoryId || 'none'} warehouse=${warehouseId || 'none'} channel=${runtimeConfig.saleorChannelId}`
     );
 
     const productCache = new Map();
@@ -466,8 +483,8 @@ export async function runEventTicketSync({ dryRun = false, trigger = 'manual' } 
       if (existingVariant) {
         summary.totals.existingVariants += 1;
         if (!dryRun) {
-          await assignProductVariantToChannel(saleor, saleorToken, config, { productId: product.id, variantId: existingVariant.id });
-          await setVariantChannelPrice(saleor, saleorToken, config, { variantId: existingVariant.id, price });
+          await assignProductVariantToChannel(saleor, saleorToken, runtimeConfig, { productId: product.id, variantId: existingVariant.id });
+          await setVariantChannelPrice(saleor, saleorToken, runtimeConfig, { variantId: existingVariant.id, price });
         }
         console.log(`[exists] variant sku=${sku} id=${existingVariant.id}`);
         continue;
@@ -479,7 +496,7 @@ export async function runEventTicketSync({ dryRun = false, trigger = 'manual' } 
         continue;
       }
 
-      const variant = await createVariant(saleor, saleorToken, config, {
+      const variant = await createVariant(saleor, saleorToken, runtimeConfig, {
         productId: product.id,
         sku,
         name: variantName,
@@ -495,8 +512,8 @@ export async function runEventTicketSync({ dryRun = false, trigger = 'manual' } 
         continue;
       }
 
-      await assignProductVariantToChannel(saleor, saleorToken, config, { productId: product.id, variantId: variant.id });
-      await setVariantChannelPrice(saleor, saleorToken, config, { variantId: variant.id, price });
+      await assignProductVariantToChannel(saleor, saleorToken, runtimeConfig, { productId: product.id, variantId: variant.id });
+      await setVariantChannelPrice(saleor, saleorToken, runtimeConfig, { variantId: variant.id, price });
       summary.totals.createdVariants += 1;
       variantCache.set(sku, variant);
       console.log(`[ok] variant created sku=${sku} id=${variant.id}`);
