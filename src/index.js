@@ -371,6 +371,16 @@ app.post('/webhooks/midtrans', async (req, res, next) => {
       });
     }
 
+    const incomingOrderCode = String(payload.order_id || '').trim();
+    if (incomingOrderCode.startsWith('payment_notif_test_')) {
+      return res.status(200).json({
+        success: true,
+        ignored: true,
+        reason: 'midtrans_test_notification',
+        order_code: incomingOrderCode
+      });
+    }
+
     if (!midtransServerKey) {
       return res.status(500).json({ error: 'MIDTRANS_SERVER_KEY is not configured' });
     }
@@ -396,7 +406,12 @@ app.post('/webhooks/midtrans', async (req, res, next) => {
 
     const order = await getOrderByCode(orderCode);
     if (!order) {
-      return res.status(404).json({ error: `Order not found for code ${orderCode}` });
+      return res.status(200).json({
+        success: true,
+        ignored: true,
+        reason: 'order_not_found',
+        order_code: orderCode
+      });
     }
 
     if (isPaidNotification(payload)) {
