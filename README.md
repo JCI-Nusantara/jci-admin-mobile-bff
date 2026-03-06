@@ -74,12 +74,12 @@ This bypass applies only to:
 
 Use for local testing only. Set back to `false` before staging/production.
 
-## CI/CD (Azure OIDC, No Slots)
+## CI/CD (Staging VM + Azure Production)
 
 Workflows:
 
 - `.github/workflows/bff-ci.yml`
-- `.github/workflows/bff-deploy-staging.yml` (deploy nonprod)
+- `.github/workflows/bff-deploy-staging.yml` (build/push GHCR image + optional staging VM deploy)
 - `.github/workflows/bff-deploy-production.yml` (deploy prod)
 - `.github/workflows/bff-rollback.yml` (manual rollback by git ref)
 
@@ -90,16 +90,22 @@ Set these in both `staging` and `production` environments (as needed):
 - `AZURE_CLIENT_ID`
 - `AZURE_TENANT_ID`
 - `AZURE_SUBSCRIPTION_ID`
-- `AZURE_WEBAPP_NAME_NONPROD` (example: `jci-mobile-admin-bff-nonprod`)
 - `AZURE_WEBAPP_NAME_PROD` (your production app name)
-- `BFF_NONPROD_HEALTH_URL` (example: `https://jci-mobile-admin-bff-nonprod.azurewebsites.net/health`)
 - `BFF_PROD_HEALTH_URL` (example: `https://<prod-app>.azurewebsites.net/health`)
+
+Staging VM deploy secrets (environment `staging`):
+
+- `STAGING_VM_HOST`
+- `STAGING_VM_USER`
+- `STAGING_VM_SSH_KEY`
+- `STAGING_VM_STACK_PATH` (absolute path to the folder containing `docker-compose.yml`)
 
 ### Release flow (no-slot)
 
-1. Push to `develop` -> deploy to nonprod app + smoke test.
-2. Manually run `BFF Deploy Production` with selected git ref.
-3. If prod breaks, run `BFF Rollback (No Slot)` and provide previous stable tag/commit SHA.
+1. Push to `develop` -> build and push `ghcr.io/<owner>/jci-admin-mobile-bff:staging`.
+2. If staging VM secrets exist, the same workflow updates `admin-bff` in your Compose stack.
+3. Push to `main` to deploy production (with GitHub Environment approval gate), or manually run `BFF Deploy Production` with a selected git ref.
+4. If prod breaks, run `BFF Rollback (No Slot)` and provide previous stable tag/commit SHA.
 
 ### Rollback recommendation
 

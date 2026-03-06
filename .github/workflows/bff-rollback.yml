@@ -3,15 +3,8 @@ name: BFF Rollback (No Slot)
 on:
   workflow_dispatch:
     inputs:
-      target:
-        description: Deploy target
-        required: true
-        type: choice
-        options:
-          - nonprod
-          - production
       ref:
-        description: Previous Git ref to roll back to (tag or commit SHA)
+        description: Previous production Git ref to roll back to (tag or commit SHA)
         required: true
 
 permissions:
@@ -21,10 +14,7 @@ permissions:
 jobs:
   rollback:
     runs-on: ubuntu-latest
-    environment: ${{ github.event.inputs.target == 'production' && 'production' || 'staging' }}
-    env:
-      APP_NAME: ${{ github.event.inputs.target == 'production' && secrets.AZURE_WEBAPP_NAME_PROD || secrets.AZURE_WEBAPP_NAME_NONPROD }}
-      HEALTH_URL: ${{ github.event.inputs.target == 'production' && secrets.BFF_PROD_HEALTH_URL || secrets.BFF_NONPROD_HEALTH_URL }}
+    environment: production
 
     steps:
       - name: Checkout rollback ref
@@ -59,9 +49,9 @@ jobs:
       - name: Roll back by redeploying selected ref
         uses: azure/webapps-deploy@v3
         with:
-          app-name: ${{ env.APP_NAME }}
+          app-name: ${{ secrets.AZURE_WEBAPP_NAME_PROD }}
           package: release.zip
 
       - name: Post-rollback smoke test
         run: |
-          curl -fsS "${{ env.HEALTH_URL }}"
+          curl -fsS "${{ secrets.BFF_PROD_HEALTH_URL }}"
