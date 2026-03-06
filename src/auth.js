@@ -22,10 +22,18 @@ export async function verifyBearerToken(authHeader = '') {
     throw err;
   }
 
-  const { payload } = await jwtVerify(token, jwks, {
-    issuer,
-    audience: audiences
-  });
+  let payload;
+  try {
+    const verified = await jwtVerify(token, jwks, {
+      issuer,
+      audience: audiences
+    });
+    payload = verified.payload;
+  } catch (_error) {
+    const err = new Error('Invalid bearer token');
+    err.status = 401;
+    throw err;
+  }
 
   const rolesRaw = payload[rolesClaimKey];
   const roles = Array.isArray(rolesRaw) ? rolesRaw.map((v) => String(v).toLowerCase()) : [];
