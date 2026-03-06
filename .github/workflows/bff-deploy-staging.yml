@@ -67,7 +67,6 @@ jobs:
     runs-on: ubuntu-latest
     environment: staging
     needs: build-and-push
-    if: ${{ secrets.STAGING_VM_HOST != '' && secrets.STAGING_VM_USER != '' && secrets.STAGING_VM_SSH_KEY != '' && secrets.STAGING_VM_STACK_PATH != '' }}
 
     steps:
       - name: Deploy via SSH
