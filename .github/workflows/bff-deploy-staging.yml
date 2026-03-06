@@ -11,7 +11,7 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository_owner }}/jci-admin-mobile-bff
+  IMAGE_NAME: jci-nusantara/jci-admin-mobile-bff
 
 jobs:
   build-and-push:
