@@ -2298,11 +2298,10 @@ app.use((req, res, next) => {
     }
     return handleEventTicketAvailability(req, res, next);
   }
-  if (req.method === 'GET' && path === '/ticket-access') {
-    return handleTicketAccess(req, res, next);
-  }
   return next();
 });
+
+app.get('/ticket-access', handleTicketAccess);
 
 app.use(async (req, _res, next) => {
   const isWebhookRequest = req.path.startsWith('/webhooks');
