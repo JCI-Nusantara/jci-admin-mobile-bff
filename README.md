@@ -16,12 +16,18 @@ Backend-for-frontend for the Flutter app.
    - `DIRECTUS_MEMBERS_COLLECTION` (default: `profiles`)
    - `SALEOR_API_URL`
    - `SALEOR_API_TOKEN`
-   - `SALEOR_CHANNEL_ID` (optional, used when creating draft orders)
-   - `MIDTRANS_SERVER_KEY`
-   - `MIDTRANS_IS_PRODUCTION` (`false` for sandbox, `true` for production)
+   - `SALEOR_CHANNEL_ID`
+   - `SALEOR_PAYMENT_GATEWAY_ID` (default: `app.saleor.payment.gateway`)
    - `PUBLIC_BASE_URL` (example: `https://jci-mobile-admin-bff-nonprod.azurewebsites.net`)
-   - `MIDTRANS_NOTIFICATION_URL` (optional override; if empty, uses `${PUBLIC_BASE_URL}/webhooks/midtrans`)
-   - `DEV_AUTH_BYPASS_SNAP` (`true` only for local dev; bypasses JWT for Snap create endpoint)
+   - `CHECKOUT_CLIENT_SECRET` (required for Nuxt server -> BFF checkout/payment calls)
+   - `DIRECTUS_SUBSCRIPTION_COLLECTION` (default: `subscription`)
+   - `GOOGLE_WORKSPACE_PROVISIONING_ENABLED` (`true` to enable post-payment provisioning)
+   - `GOOGLE_WORKSPACE_DOMAIN` (example: `jcinusantara.or.id`)
+   - `GOOGLE_WORKSPACE_ADMIN_SUBJECT` (delegated admin email, example: `it-admin@jcinusantara.or.id`)
+   - `GOOGLE_WORKSPACE_SERVICE_ACCOUNT_EMAIL`
+   - `GOOGLE_WORKSPACE_SERVICE_ACCOUNT_PRIVATE_KEY` (single-line with `\n` escapes)
+   - `GOOGLE_WORKSPACE_REQUIRED_ORDER_KEYWORD` (default: `membership`)
+   - `GOOGLE_WORKSPACE_DEFAULT_ORG_UNIT_PATH` (default: `/`)
 4. Run:
    - `npm run dev`
 
@@ -38,41 +44,33 @@ Server URL: `http://localhost:8787`
 - `GET /members`
 - `POST /members` (admin role)
 - `PATCH /members/:id` (admin role)
-- `POST /payments/midtrans/snap/transaction` (auth required; create Snap transaction for a Saleor order)
-- `POST /webhooks/midtrans` (public webhook; verifies Midtrans signature, then updates Saleor order payment state)
-- `GET /payments/midtrans/notification-url` (returns the URL to configure in Midtrans dashboard)
-- `GET /dev/snap-tester` (dev-only test page, enabled when `DEV_AUTH_BYPASS_SNAP=true`)
+- `POST /event-checkout/create` (server-to-server; create Saleor checkout + initialize Saleor payment app transaction)
+- `POST /event-checkout/process-payment` (server-to-server; process Saleor transaction and complete checkout)
 - `POST /dev/sync/event-tickets` (admin only; run Directus `event_tickets` -> Saleor sync)
 - `POST /webhooks/directus/event-tickets-sync` (secret-protected; for Directus Flow automation)
 
-### Snap transaction request example
+### Event checkout flow
 
-`POST /payments/midtrans/snap/transaction`
+The current event flow is:
 
-```json
-{
-  "orderCode": "S3A7Q8F4",
-  "enabledPayments": ["credit_card", "bca_va", "gopay"]
-}
-```
+1. Browser -> Nuxt
+2. Nuxt server -> BFF with `x-checkout-secret`
+3. BFF -> Saleor checkout + transaction initialization
+4. Saleor payment app -> Midtrans
+5. Saleor paid order -> BFF/worker -> Directus projection
 
-Response includes `token` and `redirectUrl` to continue checkout in mobile/web.
-Current default: BFF does not apply any fee imposition in request payload and always uses the order amount as gross amount.
+`POST /event-checkout/create` stores the registration payload in Directus `event_checkout_sessions`, creates the Saleor checkout, and initializes the Saleor payment transaction.
 
-### Local dev bypass
+`POST /event-checkout/process-payment` processes the Saleor transaction, completes the checkout, and projects:
 
-If member app/website is not ready yet, set:
+- `event_orders`
+- `event_order_items`
+- `event_attendees`
+- `event_form_answers`
 
-```env
-DEV_AUTH_BYPASS_SNAP=true
-```
+### Google Workspace auto-provisioning
 
-This bypass applies only to:
-
-- `POST /payments/midtrans/snap/transaction`
-- `GET /dev/snap-tester`
-
-Use for local testing only. Set back to `false` before staging/production.
+When `GOOGLE_WORKSPACE_PROVISIONING_ENABLED=true`, paid membership processing can create/find Google Workspace users and append provisioning status into `subscription.payment_remarks`.
 
 ## CI/CD (Staging VM + Azure Production)
 

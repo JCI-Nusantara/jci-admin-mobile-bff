@@ -42,10 +42,32 @@ function ticketToSku(ticket, eventSlug) {
 }
 
 function stockForTicket(ticket) {
+  const status = asString(ticket.status || 'available');
+  if (status === 'hidden' || status === 'archived' || status === 'sold_out') {
+    return { trackInventory: true, quantity: 0 };
+  }
+
   const mode = asString(ticket.quantity_mode || 'limited');
   if (mode === 'unlimited') return { trackInventory: false, quantity: 0 };
   const quantity = Math.max(0, Math.floor(asNumber(ticket.quantity_total, 0)));
   return { trackInventory: true, quantity };
+}
+
+function shouldVariantBeListed(ticket) {
+  const status = asString(ticket.status || 'available');
+  return status === 'available' || status === 'sold_out';
+}
+
+function buildVariantMetadata(ticket, eventId) {
+  return [
+    { key: 'directus_ticket_id', value: String(relationId(ticket.id)) },
+    { key: 'directus_event_id', value: String(eventId) },
+    { key: 'directus_status', value: asString(ticket.status || 'available') },
+    { key: 'directus_quantity_mode', value: asString(ticket.quantity_mode || 'limited') },
+    { key: 'directus_quantity_total', value: String(Math.max(0, Math.floor(asNumber(ticket.quantity_total, 0)))) },
+    { key: 'directus_pricing_method', value: asString(ticket.pricing_method || 'fixed') },
+    { key: 'source_system', value: 'directus' },
+  ];
 }
 
 function buildConfig() {
@@ -99,6 +121,13 @@ async function fetchDirectusItems(client, token, collection, fields) {
     headers: { Authorization: `Bearer ${token}` },
   });
   return Array.isArray(data?.data) ? data.data : [];
+}
+
+async function patchDirectusItem(client, token, collection, itemId, payload) {
+  if (!itemId || !payload || typeof payload !== 'object' || Object.keys(payload).length === 0) return;
+  await client.patch(`/items/${collection}/${itemId}`, payload, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
 }
 
 async function getSaleorToken(client, config) {
@@ -242,7 +271,19 @@ async function findVariantBySku(client, token, sku) {
     `
       query ProductVariants($search: String!) {
         productVariants(first: 20, filter: { search: $search }) {
-          edges { node { id sku } }
+          edges {
+            node {
+              id
+              sku
+              name
+              trackInventory
+              stocks {
+                id
+                quantity
+                warehouse { id }
+              }
+            }
+          }
         }
       }
     `,
@@ -252,7 +293,7 @@ async function findVariantBySku(client, token, sku) {
   return nodes.find((item) => String(item.sku || '') === sku) || null;
 }
 
-async function createVariant(client, token, config, { productId, sku, name, warehouseId, quantity, trackInventory, ticketId, eventId }) {
+async function createVariant(client, token, config, { productId, sku, name, warehouseId, quantity, trackInventory, ticket, eventId }) {
   const mutation = `
     mutation ProductVariantCreate($input: ProductVariantCreateInput!) {
       productVariantCreate(input: $input) {
@@ -267,11 +308,7 @@ async function createVariant(client, token, config, { productId, sku, name, ware
     sku,
     name,
     trackInventory,
-    metadata: [
-      { key: 'directus_ticket_id', value: String(ticketId) },
-      { key: 'directus_event_id', value: String(eventId) },
-      { key: 'source_system', value: 'directus' },
-    ],
+    metadata: buildVariantMetadata(ticket, eventId),
   };
   if (warehouseId && trackInventory) {
     input.stocks = [{ warehouse: warehouseId, quantity }];
@@ -285,6 +322,10 @@ async function createVariant(client, token, config, { productId, sku, name, ware
 }
 
 async function assignProductVariantToChannel(client, token, config, { productId, variantId }) {
+  return syncProductVariantChannelListing(client, token, config, { productId, variantId, shouldList: true });
+}
+
+async function syncProductVariantChannelListing(client, token, config, { productId, variantId, shouldList }) {
   const mutation = `
     mutation ProductChannelListingUpdate($id: ID!, $input: ProductChannelListingUpdateInput!) {
       productChannelListingUpdate(id: $id, input: $input) {
@@ -300,7 +341,8 @@ async function assignProductVariantToChannel(client, token, config, { productId,
         isPublished: true,
         visibleInListings: true,
         isAvailableForPurchase: true,
-        addVariants: [variantId],
+        addVariants: shouldList ? [variantId] : [],
+        removeVariants: shouldList ? [] : [variantId],
       },
     ],
   };
@@ -312,6 +354,104 @@ async function assignProductVariantToChannel(client, token, config, { productId,
       throw new Error(`productChannelListingUpdate(${productId}) failed: ${message}`);
     }
   }
+}
+
+async function updateVariant(client, token, { variantId, sku, name, trackInventory, metadata }) {
+  const mutation = `
+    mutation ProductVariantUpdate($id: ID, $sku: String, $input: ProductVariantInput!) {
+      productVariantUpdate(id: $id, sku: $sku, input: $input) {
+        productVariant { id sku name trackInventory }
+        errors { field code message }
+      }
+    }
+  `;
+  const data = await saleorRequest(client, token, mutation, {
+    id: variantId || null,
+    sku: variantId ? null : sku,
+    input: {
+      name,
+      trackInventory,
+      metadata,
+    },
+  });
+  const payload = data?.productVariantUpdate || {};
+  if (Array.isArray(payload.errors) && payload.errors.length > 0) {
+    throw new Error(`productVariantUpdate(${variantId || sku}) failed: ${payload.errors.map((e) => `${e.code || 'ERR'} ${e.message || ''}`).join('; ')}`);
+  }
+  return payload.productVariant || null;
+}
+
+async function createVariantStocks(client, token, { variantId, stocks }) {
+  const mutation = `
+    mutation ProductVariantStocksCreate($variantId: ID!, $stocks: [StockInput!]!) {
+      productVariantStocksCreate(variantId: $variantId, stocks: $stocks) {
+        productVariant { id }
+        errors { field code message }
+      }
+    }
+  `;
+  const data = await saleorRequest(client, token, mutation, { variantId, stocks });
+  const payload = data?.productVariantStocksCreate || {};
+  if (Array.isArray(payload.errors) && payload.errors.length > 0) {
+    throw new Error(`productVariantStocksCreate(${variantId}) failed: ${payload.errors.map((e) => `${e.code || 'ERR'} ${e.message || ''}`).join('; ')}`);
+  }
+}
+
+async function updateVariantStocks(client, token, { variantId, stocks }) {
+  const mutation = `
+    mutation ProductVariantStocksUpdate($variantId: ID!, $stocks: [StockInput!]!) {
+      productVariantStocksUpdate(variantId: $variantId, stocks: $stocks) {
+        productVariant { id }
+        errors { field code message }
+      }
+    }
+  `;
+  const data = await saleorRequest(client, token, mutation, { variantId, stocks });
+  const payload = data?.productVariantStocksUpdate || {};
+  if (Array.isArray(payload.errors) && payload.errors.length > 0) {
+    throw new Error(`productVariantStocksUpdate(${variantId}) failed: ${payload.errors.map((e) => `${e.code || 'ERR'} ${e.message || ''}`).join('; ')}`);
+  }
+}
+
+async function deleteVariantStocks(client, token, { variantId, warehouseIds }) {
+  const mutation = `
+    mutation ProductVariantStocksDelete($variantId: ID!, $warehouseIds: [ID!]) {
+      productVariantStocksDelete(variantId: $variantId, warehouseIds: $warehouseIds) {
+        productVariant { id }
+        errors { field code message }
+      }
+    }
+  `;
+  const data = await saleorRequest(client, token, mutation, { variantId, warehouseIds });
+  const payload = data?.productVariantStocksDelete || {};
+  if (Array.isArray(payload.errors) && payload.errors.length > 0) {
+    throw new Error(`productVariantStocksDelete(${variantId}) failed: ${payload.errors.map((e) => `${e.code || 'ERR'} ${e.message || ''}`).join('; ')}`);
+  }
+}
+
+async function syncVariantStock(client, token, { variant, warehouseId, trackInventory, quantity }) {
+  const currentStocks = Array.isArray(variant?.stocks) ? variant.stocks : [];
+  const warehouseStocks = currentStocks.filter((stock) => String(stock?.warehouse?.id || '') === String(warehouseId));
+  const allWarehouseIds = currentStocks.map((stock) => stock?.warehouse?.id).filter(Boolean);
+
+  if (!trackInventory) {
+    if (allWarehouseIds.length > 0) {
+      await deleteVariantStocks(client, token, { variantId: variant.id, warehouseIds: allWarehouseIds });
+    }
+    return;
+  }
+
+  if (!warehouseId) {
+    throw new Error(`Warehouse is required to sync stock for variant ${variant?.id || 'unknown'}`);
+  }
+
+  const stocks = [{ warehouse: warehouseId, quantity }];
+  if (warehouseStocks.length > 0) {
+    await updateVariantStocks(client, token, { variantId: variant.id, stocks });
+    return;
+  }
+
+  await createVariantStocks(client, token, { variantId: variant.id, stocks });
 }
 
 async function setVariantChannelPrice(client, token, config, { variantId, price }) {
@@ -396,6 +536,7 @@ export async function runEventTicketSync({ dryRun = false, trigger = 'manual' } 
       existingProducts: 0,
       createdVariants: 0,
       existingVariants: 0,
+      updatedVariants: 0,
       skipped: 0,
     },
   };
@@ -412,17 +553,36 @@ export async function runEventTicketSync({ dryRun = false, trigger = 'manual' } 
     const categoryId = await resolveCategoryId(saleor, saleorToken, runtimeConfig);
 
     const [events, tickets] = await Promise.all([
-      fetchDirectusItems(directus, directusToken, config.directusEventsCollection, ['id', 'title', 'slug', 'status']),
+      fetchDirectusItems(directus, directusToken, config.directusEventsCollection, [
+        'id',
+        'title',
+        'slug',
+        'status',
+        'saleor_product_id',
+        'saleor_product_slug',
+      ]),
       fetchDirectusItems(
         directus,
         directusToken,
         config.directusEventTicketsCollection,
-        ['id', 'event_id', 'name', 'status', 'price', 'pricing_method', 'quantity_mode', 'quantity_total', 'sort']
+        [
+          'id',
+          'event_id',
+          'name',
+          'status',
+          'price',
+          'pricing_method',
+          'quantity_mode',
+          'quantity_total',
+          'sort',
+          'saleor_variant_id',
+          'saleor_sku',
+        ]
       ),
     ]);
 
     const eventById = new Map(events.map((row) => [relationId(row.id), row]));
-    const candidateTickets = tickets.filter((ticket) => asString(ticket.status) === 'available' && relationId(ticket.event_id));
+    const candidateTickets = tickets.filter((ticket) => relationId(ticket.event_id));
     summary.totals.tickets = candidateTickets.length;
 
     console.log(
@@ -448,6 +608,8 @@ export async function runEventTicketSync({ dryRun = false, trigger = 'manual' } 
       const price = Math.max(0, asNumber(ticket.price, 0));
       const { trackInventory, quantity } = stockForTicket(ticket);
       const variantName = asString(ticket.name || sku);
+      const shouldList = shouldVariantBeListed(ticket);
+      const metadata = buildVariantMetadata(ticket, eventId);
 
       let product = productCache.get(productSlug) || null;
       if (!product) product = await findProductBySlug(saleor, saleorToken, productSlug);
@@ -473,6 +635,19 @@ export async function runEventTicketSync({ dryRun = false, trigger = 'manual' } 
 
       productCache.set(productSlug, product);
       if (!dryRun) await ensureProductCategory(saleor, saleorToken, { productId: product.id, categoryId });
+      if (!dryRun) {
+        const eventPatch = {};
+        if (String(event.saleor_product_id || '') !== String(product.id || '')) {
+          eventPatch.saleor_product_id = product.id;
+        }
+        if (String(event.saleor_product_slug || '') !== String(product.slug || '')) {
+          eventPatch.saleor_product_slug = product.slug || productSlug;
+        }
+        if (Object.keys(eventPatch).length > 0) {
+          await patchDirectusItem(directus, directusToken, config.directusEventsCollection, eventId, eventPatch);
+          Object.assign(event, eventPatch);
+        }
+      }
 
       let existingVariant = variantCache.get(sku) || null;
       if (!existingVariant) {
@@ -483,10 +658,40 @@ export async function runEventTicketSync({ dryRun = false, trigger = 'manual' } 
       if (existingVariant) {
         summary.totals.existingVariants += 1;
         if (!dryRun) {
-          await assignProductVariantToChannel(saleor, saleorToken, runtimeConfig, { productId: product.id, variantId: existingVariant.id });
-          await setVariantChannelPrice(saleor, saleorToken, runtimeConfig, { variantId: existingVariant.id, price });
+          await updateVariant(saleor, saleorToken, {
+            variantId: existingVariant.id,
+            name: variantName,
+            trackInventory,
+            metadata,
+          });
+          await syncVariantStock(saleor, saleorToken, {
+            variant: existingVariant,
+            warehouseId,
+            trackInventory,
+            quantity,
+          });
+          await syncProductVariantChannelListing(saleor, saleorToken, runtimeConfig, {
+            productId: product.id,
+            variantId: existingVariant.id,
+            shouldList,
+          });
+          if (shouldList) {
+            await setVariantChannelPrice(saleor, saleorToken, runtimeConfig, { variantId: existingVariant.id, price });
+          }
+          const ticketPatch = {};
+          if (String(ticket.saleor_variant_id || '') !== String(existingVariant.id || '')) {
+            ticketPatch.saleor_variant_id = existingVariant.id;
+          }
+          if (String(ticket.saleor_sku || '') !== String(sku || '')) {
+            ticketPatch.saleor_sku = sku;
+          }
+          if (Object.keys(ticketPatch).length > 0) {
+            await patchDirectusItem(directus, directusToken, config.directusEventTicketsCollection, relationId(ticket.id), ticketPatch);
+            Object.assign(ticket, ticketPatch);
+          }
+          summary.totals.updatedVariants += 1;
         }
-        console.log(`[exists] variant sku=${sku} id=${existingVariant.id}`);
+        console.log(`[exists] variant sku=${sku} id=${existingVariant.id} status=${asString(ticket.status || 'available')} qty=${quantity} listed=${shouldList}`);
         continue;
       }
 
@@ -503,7 +708,7 @@ export async function runEventTicketSync({ dryRun = false, trigger = 'manual' } 
         warehouseId,
         quantity,
         trackInventory,
-        ticketId: relationId(ticket.id),
+        ticket,
         eventId,
       });
       if (!variant?.id) {
@@ -514,6 +719,10 @@ export async function runEventTicketSync({ dryRun = false, trigger = 'manual' } 
 
       await assignProductVariantToChannel(saleor, saleorToken, runtimeConfig, { productId: product.id, variantId: variant.id });
       await setVariantChannelPrice(saleor, saleorToken, runtimeConfig, { variantId: variant.id, price });
+      await patchDirectusItem(directus, directusToken, config.directusEventTicketsCollection, relationId(ticket.id), {
+        saleor_variant_id: variant.id,
+        saleor_sku: sku,
+      });
       summary.totals.createdVariants += 1;
       variantCache.set(sku, variant);
       console.log(`[ok] variant created sku=${sku} id=${variant.id}`);

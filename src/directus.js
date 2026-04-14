@@ -53,3 +53,41 @@ export async function directusRequest(config) {
     }
   });
 }
+
+// Admin-level request using email/password login (has access to system collections)
+let adminToken = null;
+let adminTokenAt = 0;
+
+async function getAdminToken() {
+  if (adminToken && Date.now() - adminTokenAt < 14 * 60 * 1000) {
+    return adminToken;
+  }
+  if (!email || !password) {
+    throw new Error('DIRECTUS_EMAIL and DIRECTUS_PASSWORD are required for admin operations');
+  }
+  const { data } = await directus.post('/auth/login', { email, password });
+  adminToken = data?.data?.access_token;
+  adminTokenAt = Date.now();
+  return adminToken;
+}
+
+export async function directusAdminRequest(config) {
+  const token = await getAdminToken();
+  return directus.request({
+    ...config,
+    headers: {
+      ...(config.headers || {}),
+      Authorization: `Bearer ${token}`
+    }
+  });
+}
+
+export async function directusRequestAs(config, userToken) {
+  return directus.request({
+    ...config,
+    headers: {
+      ...(config.headers || {}),
+      Authorization: `Bearer ${userToken}`
+    }
+  });
+}
