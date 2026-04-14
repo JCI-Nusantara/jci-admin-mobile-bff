@@ -1,11 +1,13 @@
 name: BFF Deploy Production
 
 on:
+  push:
+    branches: ["main"]
   workflow_dispatch:
     inputs:
       ref:
         description: Git ref to deploy (branch, tag, or commit SHA)
-        required: true
+        required: false
         default: main
 
 permissions:
@@ -21,7 +23,7 @@ jobs:
       - name: Checkout selected ref
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.ref }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.sha }}
 
       - name: Setup Node
         uses: actions/setup-node@v4

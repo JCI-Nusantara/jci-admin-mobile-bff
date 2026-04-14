@@ -1,0 +1,94 @@
+version: '3.9'
+
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+
+  directus:
+    image: directus/directus:11
+    restart: unless-stopped
+    depends_on:
+      - redis
+    ports:
+      - "8055:8055"
+    environment:
+      KEY: ${DIRECTUS_KEY}
+      SECRET: ${DIRECTUS_SECRET}
+      ADMIN_EMAIL: ${DIRECTUS_ADMIN_EMAIL}
+      ADMIN_PASSWORD: ${DIRECTUS_ADMIN_PASSWORD}
+      DB_CLIENT: pg
+      DB_CONNECTION_STRING: ${DIRECTUS_DB_CONNECTION_STRING}
+      CACHE_ENABLED: true
+      CACHE_AUTO_PURGE: true
+      REDIS: redis://redis:6379
+      PUBLIC_URL: ${DIRECTUS_PUBLIC_URL}
+
+  saleor-api:
+    image: ghcr.io/saleor/saleor:3.20
+    restart: unless-stopped
+    depends_on:
+      - redis
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: ${SALEOR_DB_CONNECTION_STRING}
+      REDIS_URL: redis://redis:6379/0
+      SECRET_KEY: ${SALEOR_SECRET_KEY}
+      ALLOWED_HOSTS: ${SALEOR_ALLOWED_HOSTS}
+      DEFAULT_FROM_EMAIL: ${SALEOR_DEFAULT_FROM_EMAIL}
+      ENABLE_DEBUG_TOOLBAR: false
+    command: ["/bin/sh", "-lc", "python3 manage.py migrate && gunicorn saleor.wsgi:application --bind 0.0.0.0:8000 --workers 3 --timeout 120"]
+
+  saleor-worker:
+    image: ghcr.io/saleor/saleor:3.20
+    restart: unless-stopped
+    depends_on:
+      - redis
+      - saleor-api
+    environment:
+      DATABASE_URL: ${SALEOR_DB_CONNECTION_STRING}
+      REDIS_URL: redis://redis:6379/0
+      SECRET_KEY: ${SALEOR_SECRET_KEY}
+      ALLOWED_HOSTS: ${SALEOR_ALLOWED_HOSTS}
+      DEFAULT_FROM_EMAIL: ${SALEOR_DEFAULT_FROM_EMAIL}
+    command: ["celery", "-A", "saleor", "worker", "--loglevel=info"]
+
+  saleor-dashboard:
+    image: ghcr.io/saleor/saleor-dashboard:latest
+    restart: unless-stopped
+    ports:
+      - "9000:80"
+
+  admin-bff:
+    image: ${BFF_IMAGE}
+    restart: unless-stopped
+    depends_on:
+      - directus
+      - saleor-api
+    ports:
+      - "8787:8787"
+    environment:
+      AUTH0_DOMAIN: ${AUTH0_DOMAIN}
+      AUTH0_CLIENT_ID: ${AUTH0_CLIENT_ID}
+      AUTH0_AUDIENCE: ${AUTH0_AUDIENCE}
+      AUTH0_ADMIN_ROLE: ${AUTH0_ADMIN_ROLE}
+      DIRECTUS_URL: ${DIRECTUS_URL}
+      DIRECTUS_STATIC_TOKEN: ${DIRECTUS_STATIC_TOKEN}
+      DIRECTUS_MEMBERS_COLLECTION: ${DIRECTUS_MEMBERS_COLLECTION}
+      SALEOR_API_URL: ${SALEOR_API_URL}
+      SALEOR_API_TOKEN: ${SALEOR_API_TOKEN}
+      SALEOR_CHANNEL_ID: ${SALEOR_CHANNEL_ID}
+      MIDTRANS_SERVER_KEY: ${MIDTRANS_SERVER_KEY}
+      MIDTRANS_IS_PRODUCTION: ${MIDTRANS_IS_PRODUCTION}
+      MIDTRANS_NOTIFICATION_URL: ${MIDTRANS_NOTIFICATION_URL}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}
+      DIRECTUS_SYNC_WEBHOOK_SECRET: ${DIRECTUS_SYNC_WEBHOOK_SECRET}
+      DIRECTUS_SYNC_LOG_ENABLED: ${DIRECTUS_SYNC_LOG_ENABLED}
+      DIRECTUS_SYNC_LOG_COLLECTION: ${DIRECTUS_SYNC_LOG_COLLECTION}
+      NODE_ENV: production
+
+networks:
+  default:
+    name: jci-staging

@@ -1,4 +1,4 @@
-name: BFF Deploy Nonprod
+name: BFF Staging Build/Deploy
 
 on:
   push:
@@ -6,13 +6,19 @@ on:
   workflow_dispatch:
 
 permissions:
-  id-token: write
   contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: jci-nusantara/jci-admin-mobile-bff
 
 jobs:
-  deploy-nonprod:
+  build-and-push:
     runs-on: ubuntu-latest
     environment: staging
+    outputs:
+      image_tag: ${{ steps.meta.outputs.version }}
 
     steps:
       - name: Checkout
@@ -30,24 +36,53 @@ jobs:
       - name: Validate syntax
         run: npm run check
 
-      - name: Create deployment package
-        run: |
-          zip -r release.zip . \
-            -x "**/.git/*" "**/node_modules/*" "**/.env" "**/.env.*" "**/coverage/*"
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - name: Azure Login (OIDC)
-        uses: azure/login@v2
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Deploy to nonprod app
-        uses: azure/webapps-deploy@v3
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
         with:
-          app-name: ${{ secrets.AZURE_WEBAPP_NAME_NONPROD }}
-          package: release.zip
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=staging
+            type=sha,format=short
 
-      - name: Nonprod smoke test
-        run: |
-          curl -fsS "${{ secrets.BFF_NONPROD_HEALTH_URL }}"
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  deploy-to-staging-vm:
+    runs-on: ubuntu-latest
+    environment: staging
+    needs: build-and-push
+
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          REGISTRY: ${{ env.REGISTRY }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+        with:
+          host: ${{ secrets.STAGING_VM_HOST }}
+          username: ${{ secrets.STAGING_VM_USER }}
+          key: ${{ secrets.STAGING_VM_SSH_KEY }}
+          script_stop: true
+          envs: REGISTRY,IMAGE_NAME
+          script: |
+            export BFF_IMAGE="${REGISTRY}/${IMAGE_NAME}:staging"
+            cd "${{ secrets.STAGING_VM_STACK_PATH }}"
+            docker compose pull admin-bff
+            docker compose up -d admin-bff
+            docker image prune -f
